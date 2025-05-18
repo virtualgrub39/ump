@@ -1,9 +1,11 @@
+#include <locale.h>
+#include <miniaudio.h>
+#include <ncurses.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <locale.h>
-#include <ncurses.h>
-#include <miniaudio.h>
 #include <taglib/tag_c.h>
+
+static ma_engine engine;
 
 struct file_info {
     const char* file_path;
@@ -39,11 +41,11 @@ get_file_info(const char* path, struct file_info* info)
         return false;
     }
 
-    info->title  = taglib_tag_title(tag);
+    info->title = taglib_tag_title(tag);
     info->artist = taglib_tag_artist(tag);
-    info->album  = taglib_tag_album(tag);
-    info->year  = taglib_tag_year(tag);
-    info->genre  = taglib_tag_genre(tag);
+    info->album = taglib_tag_album(tag);
+    info->year = taglib_tag_year(tag);
+    info->genre = taglib_tag_genre(tag);
     info->bitrate_kbps = taglib_audioproperties_bitrate(ap);
     info->length_secs = taglib_audioproperties_length(ap);
     info->channels = taglib_audioproperties_channels(ap);
@@ -51,6 +53,44 @@ get_file_info(const char* path, struct file_info* info)
 
     taglib_file_free(file);
     return true;
+}
+
+typedef struct sound {
+    struct file_info info;
+    ma_sound sound;
+} Sound;
+
+bool
+sound_load(const char* path, Sound* sound)
+{
+    if (!sound)
+        return false;
+    if (!get_file_info(path, &sound->info))
+        return false;
+
+    if (ma_sound_init_from_file(&engine, path, 0, NULL, NULL, &sound->sound) !=
+        MA_SUCCESS)
+        return false;
+
+    return true;
+}
+
+void
+sound_resume(Sound* sound)
+{
+    ma_sound_start(&sound->sound);
+}
+
+void
+sound_pause(Sound* sound)
+{
+    ma_sound_stop_with_fade_in_milliseconds(&sound->sound, 1);
+}
+
+void
+sound_unload(Sound* sound)
+{
+    ma_sound_uninit(&sound->sound);
 }
 
 int
@@ -66,35 +106,38 @@ main(int argc, char* argv[])
         return 1;
     }
 
-    struct file_info info = { 0 };
-    get_file_info(argv[1], &info);
+    if (ma_engine_init(NULL, &engine) != MA_SUCCESS) {
+        fprintf(stderr, "Failed to init audio engine\n");
+        return 1;
+    }
+
+    Sound song = { 0 };
+    if (!sound_load(argv[1], &song)) {
+        fprintf(stderr, "Failed to load audio file\n");
+        return 1;
+    }
 
     initscr();
     cbreak();
     noecho();
 
-    mvprintw(1, 1, "Title     : %s",  info.title);
-    mvprintw(2, 1, "Artist    : %s",  info.artist);
-    mvprintw(3, 1, "Album     : %s",  info.album);
-    mvprintw(4, 1, "Year      : %u",  info.year);
-    mvprintw(5, 1, "Genre     : %s",  info.genre);
-    mvprintw(6, 1, "Bitrate   : %u [kb/s]",  info.bitrate_kbps);
-    mvprintw(7, 1, "Length    : %u [s]",  info.length_secs);
-    mvprintw(8, 1, "Channels  : %u",  info.channels);
-    mvprintw(9, 1, "Samplerate: %u [hz]",  info.samplerate_hz);
+    mvprintw(1, 1, "Title     : %s", song.info.title);
+    mvprintw(2, 1, "Artist    : %s", song.info.artist);
+    mvprintw(3, 1, "Album     : %s", song.info.album);
+    mvprintw(4, 1, "Year      : %u", song.info.year);
+    mvprintw(5, 1, "Genre     : %s", song.info.genre);
+    mvprintw(6, 1, "Bitrate   : %u [kb/s]", song.info.bitrate_kbps);
+    mvprintw(7, 1, "Length    : %u [s]", song.info.length_secs);
+    mvprintw(8, 1, "Channels  : %u", song.info.channels);
+    mvprintw(9, 1, "Samplerate: %u [hz]", song.info.samplerate_hz);
     refresh();
 
     taglib_tag_free_strings();
 
-    ma_engine engine;
-    if (ma_engine_init(NULL, &engine) != MA_SUCCESS) {
-        endwin();
-        fprintf(stderr, "Failed to init audio engine\n");
-        return 1;
-    }
-    ma_engine_play_sound(&engine, argv[1], NULL);
-
+    sound_resume(&song);
     getch();
+    sound_unload(&song);
+
     endwin();
     ma_engine_uninit(&engine);
 
