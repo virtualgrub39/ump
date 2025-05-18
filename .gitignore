@@ -1,0 +1,5 @@
+.vscode
+*.o
+ump
+test.flac
+config.h
