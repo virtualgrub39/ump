@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <taglib/tag_c.h>
+#include <glib.h>
 
 static ma_engine engine;
 
@@ -55,20 +56,20 @@ get_file_info(const char* path, struct file_info* info)
     return true;
 }
 
-typedef struct sound {
+typedef struct {
     struct file_info info;
     ma_sound sound;
-} Sound;
+} Song;
 
 bool
-sound_load(const char* path, Sound* sound)
+song_load(const char* path, Song* song)
 {
-    if (!sound)
+    if (!song)
         return false;
-    if (!get_file_info(path, &sound->info))
+    if (!get_file_info(path, &song->info))
         return false;
 
-    if (ma_sound_init_from_file(&engine, path, 0, NULL, NULL, &sound->sound) !=
+    if (ma_sound_init_from_file(&engine, path, 0, NULL, NULL, &song->sound) !=
         MA_SUCCESS)
         return false;
 
@@ -76,70 +77,147 @@ sound_load(const char* path, Sound* sound)
 }
 
 void
-sound_resume(Sound* sound)
+song_resume(Song* song)
 {
-    ma_sound_start(&sound->sound);
+    ma_sound_start(&song->sound);
 }
 
 void
-sound_pause(Sound* sound)
+song_pause(Song* song)
 {
-    ma_sound_stop_with_fade_in_milliseconds(&sound->sound, 1);
+    ma_sound_stop_with_fade_in_milliseconds(&song->sound, 1);
 }
 
 void
-sound_unload(Sound* sound)
+song_unload(gpointer data, gpointer user_data)
 {
-    ma_sound_uninit(&sound->sound);
+    Song* song = (Song*)data;
+    (void)user_data;
+    ma_sound_uninit(&song->sound);
+}
+
+typedef struct {
+    GPtrArray* LoadedMusic;
+    guint current_song_idx;
+} Player;
+
+Player
+player_new()
+{
+    return (Player) {
+        .LoadedMusic = g_ptr_array_new(),
+        .current_song_idx = 0,
+    };
+}
+
+void
+player_destroy(Player* p)
+{
+    g_ptr_array_foreach(p->LoadedMusic, song_unload, NULL);
+    g_ptr_array_free(p->LoadedMusic, TRUE);
+}
+
+bool
+player_load_from_file(Player* p, const char* path)
+{
+    Song* song = g_malloc(sizeof(Song));
+    if (!song_load(path, song)) {
+        g_free(song);
+        return false;
+    }
+
+    g_ptr_array_add(p->LoadedMusic, song);
+
+    return true;
+}
+
+void
+player_set_current_song_idx(Player* p, guint idx)
+{
+    p->current_song_idx = idx;
+}
+
+void
+player_resume(Player* p)
+{
+    g_assert_false(p->current_song_idx >= p->LoadedMusic->len);
+    Song* current_song = g_ptr_array_index(p->LoadedMusic, p->current_song_idx);
+    song_resume(current_song);
+}
+
+void
+player_pause(Player* p)
+{
+    g_assert_false(p->current_song_idx >= p->LoadedMusic->len);
+    Song* current_song = g_ptr_array_index(p->LoadedMusic, p->current_song_idx);
+    song_pause(current_song);
+}
+
+struct file_info*
+player_get_current_info(const Player* p)
+{
+    g_assert_false(p->current_song_idx >= p->LoadedMusic->len);
+    Song* current_song = g_ptr_array_index(p->LoadedMusic, p->current_song_idx);
+    return &current_song->info;
 }
 
 int
 main(int argc, char* argv[])
 {
     if (!setlocale(LC_ALL, "C.utf8")) {
-        fprintf(stderr, "Failed to set UTF-8 locale\n");
-        return 1;
-    }
-
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <audio-file>\n", argv[0]);
-        return 1;
-    }
-
-    if (ma_engine_init(NULL, &engine) != MA_SUCCESS) {
-        fprintf(stderr, "Failed to init audio engine\n");
-        return 1;
-    }
-
-    Sound song = { 0 };
-    if (!sound_load(argv[1], &song)) {
-        fprintf(stderr, "Failed to load audio file\n");
-        return 1;
+        clear();
+        mvprintw(1, 1, "Failed to set UTF-8 locale\n");
+        goto ncurses_deinit;
     }
 
     initscr();
     cbreak();
     noecho();
 
-    mvprintw(1, 1, "Title     : %s", song.info.title);
-    mvprintw(2, 1, "Artist    : %s", song.info.artist);
-    mvprintw(3, 1, "Album     : %s", song.info.album);
-    mvprintw(4, 1, "Year      : %u", song.info.year);
-    mvprintw(5, 1, "Genre     : %s", song.info.genre);
-    mvprintw(6, 1, "Bitrate   : %u [kb/s]", song.info.bitrate_kbps);
-    mvprintw(7, 1, "Length    : %u [s]", song.info.length_secs);
-    mvprintw(8, 1, "Channels  : %u", song.info.channels);
-    mvprintw(9, 1, "Samplerate: %u [hz]", song.info.samplerate_hz);
+    if (argc < 2) {
+        clear();
+        mvprintw(1, 1, "Usage: %s <audio-file>\n", argv[0]);
+        goto ncurses_deinit;
+    }
+
+    if (ma_engine_init(NULL, &engine) != MA_SUCCESS) {
+        clear();
+        mvprintw(1, 1, "Failed to init audio engine\n");
+        goto ncurses_deinit;
+    }
+
+    Player player = player_new();
+    if (!player_load_from_file(&player, argv[1])) {
+        clear();
+        mvprintw(1, 1, "Failed to load audio file\n");
+        goto miniaudio_deinit;
+    }
+
+    struct file_info* info = player_get_current_info(&player);
+
+    mvprintw(1, 1, "Title     : %s", info->title);
+    mvprintw(2, 1, "Artist    : %s", info->artist);
+    mvprintw(3, 1, "Album     : %s", info->album);
+    mvprintw(4, 1, "Year      : %u", info->year);
+    mvprintw(5, 1, "Genre     : %s", info->genre);
+    mvprintw(6, 1, "Bitrate   : %u [kb/s]", info->bitrate_kbps);
+    mvprintw(7, 1, "Length    : %u [s]", info->length_secs);
+    mvprintw(8, 1, "Channels  : %u", info->channels);
+    mvprintw(9, 1, "Samplerate: %u [hz]", info->samplerate_hz);
     refresh();
 
     taglib_tag_free_strings();
 
-    sound_resume(&song);
+    player_resume(&player);
+    
     getch();
-    sound_unload(&song);
 
-    endwin();
+// ump_deinit:
+    player_destroy(&player);
+miniaudio_deinit:
     ma_engine_uninit(&engine);
-
+ncurses_deinit:
+    getch();
+    endwin();
     return 0;
 }
